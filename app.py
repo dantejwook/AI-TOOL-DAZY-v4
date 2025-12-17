@@ -1,5 +1,7 @@
 # app.py
 import streamlit as st
+from pathlib import Path
+from datetime import datetime
 
 # -------------------------------------------------
 # 페이지 설정
@@ -13,13 +15,40 @@ st.set_page_config(
 st.title("🗂️ AI Dazy Document Sorter")
 
 # -------------------------------------------------
-# 상단: 2컬럼 레이아웃 (고정)
+# CSS: STATUS BAR 하단 고정
+# -------------------------------------------------
+st.markdown(
+    """
+    <style>
+    #status-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: #1f2937;
+        color: white;
+        padding: 8px 16px;
+        font-size: 14px;
+        z-index: 9999;
+        border-top: 1px solid #374151;
+    }
+    .content-padding {
+        padding-bottom: 60px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="content-padding">', unsafe_allow_html=True)
+
+# -------------------------------------------------
+# 상단: 좌 / 우 고정 레이아웃
 # -------------------------------------------------
 left_col, right_col = st.columns([1, 1])
 
 with left_col:
     st.subheader("📤 파일 업로드")
-
     uploaded_files = st.file_uploader(
         "문서를 업로드하세요 (.md, .pdf, .txt)",
         type=["md", "pdf", "txt"],
@@ -28,10 +57,10 @@ with left_col:
 
 with right_col:
     st.subheader("📦 ZIP 다운로드")
-    zip_placeholder = st.empty()  # 실행 후 여기에 버튼 표시
+    zip_placeholder = st.empty()
 
 # -------------------------------------------------
-# 실행 버튼 (컬럼 아래, 위치 고정)
+# 실행 버튼
 # -------------------------------------------------
 run_clicked = st.button(
     "🚀 정리 시작",
@@ -40,65 +69,98 @@ run_clicked = st.button(
 )
 
 # -------------------------------------------------
-# 하단 고정 영역: STATUS + LOG
+# 로그 파일 준비
 # -------------------------------------------------
-st.divider()
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
 
-status_container = st.empty()   # STATUS BAR 고정
-log_container = st.empty()      # LOG 고정
-
-# 상태/로그 초기화 (session_state로 1회만)
-if "logs" not in st.session_state:
+if "log_file" not in st.session_state:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.log_file = LOG_DIR / f"run_{ts}.log"
     st.session_state.logs = []
 
-def update_status(text):
-    status_container.markdown(
+def log(msg: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+
+    # UI 로그
+    st.session_state.logs.append(line)
+
+    # 파일 로그
+    with open(st.session_state.log_file, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+# -------------------------------------------------
+# STATUS BAR 상태 관리
+# -------------------------------------------------
+status_placeholder = st.empty()
+
+def update_status(done: int, total: int, message: str = ""):
+    pct = int((done / total) * 100) if total else 0
+    status_placeholder.markdown(
         f"""
-        <div style="
-            background:#2e2e2e;
-            padding:8px;
-            border-radius:6px;
-            font-size:0.9em;
-        ">
-        {text}
+        <div id="status-bar">
+            🔄 {message}
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            <b>{pct}%</b> processing
+            &nbsp;&nbsp;
+            ({done} / {total} complete)
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-def log(msg):
-    st.session_state.logs.append(msg)
+# 초기 상태
+update_status(0, max(len(uploaded_files), 1), "대기 중")
+
+# -------------------------------------------------
+# LOG UI (하단, status 위)
+# -------------------------------------------------
+st.subheader("🧵 Log")
+log_container = st.empty()
+
+def render_logs():
     log_container.markdown(
-        "<br>".join(st.session_state.logs[-10:]),
+        "<br>".join(st.session_state.logs[-15:]),
         unsafe_allow_html=True,
     )
-
-# 초기 상태 표시
-update_status("대기 중")
 
 # -------------------------------------------------
 # 실행 로직
 # -------------------------------------------------
 if run_clicked:
     try:
-        update_status("🔄 처리 엔진 로딩 중... [0%]")
-        log("엔진 로딩 시작")
+        total_steps = 4
+        done = 0
+
+        log("처리 시작")
+        update_status(done, total_steps, "엔진 로딩 중")
 
         from core.pipeline import run_pipeline
 
+        done += 1
+        update_status(done, total_steps, "문서 분석 중")
+        log("문서 분석 시작")
+
         def progress_cb(pct):
-            update_status(f"🔄 processing [{pct}%]")
+            # pct: 0~100 → 전체 step 기준 환산
+            sub_done = done + pct / 100
+            update_status(int(sub_done), total_steps, "문서 정리 중")
 
         zip_path = run_pipeline(
             files=uploaded_files,
             log_cb=log,
-            progress_cb=progress_cb,
+            progress_cb=lambda p: progress_cb(p),
         )
 
-        update_status("✅ 완료 [100%]")
-        log("모든 문서 정리 완료")
+        done += 2
+        update_status(done, total_steps, "ZIP 생성 중")
+        log("ZIP 생성 완료")
 
-        # ZIP 다운로드 버튼을 오른쪽 컬럼에 표시
+        done = total_steps
+        update_status(done, total_steps, "완료")
+        log("모든 작업 완료")
+
         with right_col:
             with open(zip_path, "rb") as f:
                 zip_placeholder.download_button(
@@ -109,6 +171,11 @@ if run_clicked:
                 )
 
     except Exception as e:
-        update_status("❌ 오류 발생")
         log(f"ERROR: {e}")
+        update_status(0, 1, "오류 발생")
         st.error("처리 중 오류가 발생했습니다.")
+
+# -------------------------------------------------
+# 하단 padding 종료
+# -------------------------------------------------
+st.markdown("</div>", unsafe_allow_html=True)
