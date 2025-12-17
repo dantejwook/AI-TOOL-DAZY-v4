@@ -1,9 +1,9 @@
 # app.py
 import streamlit as st
 
-# ------------------------------------
-# 1️⃣ 페이지 설정
-# ------------------------------------
+# -------------------------------------------------
+# 페이지 설정
+# -------------------------------------------------
 st.set_page_config(
     page_title="AI dazy document sorter",
     page_icon="🗂️",
@@ -11,88 +11,104 @@ st.set_page_config(
 )
 
 st.title("🗂️ AI Dazy Document Sorter")
-st.caption("문서를 업로드하면 의미 기반으로 자동 분류합니다.")
 
-# ------------------------------------
-# 2️⃣ 파일 업로드
-# ------------------------------------
-uploaded_files = st.file_uploader(
-    "📤 문서를 업로드하세요 (.md, .pdf, .txt)",
-    type=["md", "pdf", "txt"],
-    accept_multiple_files=True,
+# -------------------------------------------------
+# 상단: 2컬럼 레이아웃 (고정)
+# -------------------------------------------------
+left_col, right_col = st.columns([1, 1])
+
+with left_col:
+    st.subheader("📤 파일 업로드")
+
+    uploaded_files = st.file_uploader(
+        "문서를 업로드하세요 (.md, .pdf, .txt)",
+        type=["md", "pdf", "txt"],
+        accept_multiple_files=True,
+    )
+
+with right_col:
+    st.subheader("📦 ZIP 다운로드")
+    zip_placeholder = st.empty()  # 실행 후 여기에 버튼 표시
+
+# -------------------------------------------------
+# 실행 버튼 (컬럼 아래, 위치 고정)
+# -------------------------------------------------
+run_clicked = st.button(
+    "🚀 정리 시작",
+    type="primary",
+    disabled=not bool(uploaded_files),
 )
 
-if not uploaded_files:
-    st.info("파일을 업로드하면 분석 준비를 시작합니다.")
-    st.stop()
+# -------------------------------------------------
+# 하단 고정 영역: STATUS + LOG
+# -------------------------------------------------
+st.divider()
 
-# ------------------------------------
-# 3️⃣ UI 준비 단계 (lazy import)
-# ------------------------------------
-with st.spinner("파일 분석 준비 중..."):
-    from ui.sidebar import sidebar_controls
-    from ui.components import progress_ui, status_ui, log_ui
+status_container = st.empty()   # STATUS BAR 고정
+log_container = st.empty()      # LOG 고정
 
-options = sidebar_controls()
-st.success(f"✅ {len(uploaded_files)}개 파일 업로드 완료")
+# 상태/로그 초기화 (session_state로 1회만)
+if "logs" not in st.session_state:
+    st.session_state.logs = []
 
-# ------------------------------------
-# 4️⃣ 실행 트리거
-# ------------------------------------
-if not st.button("🚀 정리 시작", type="primary"):
-    st.stop()
-
-# ------------------------------------
-# 5️⃣ 상태 UI 초기화
-# ------------------------------------
-progress = progress_ui()
-status, update_status = status_ui("📊 문서 정리 진행 상황")
-log = log_ui()
-
-progress.progress(0)
-update_status("파일 검증 중...", "running")
-
-# ------------------------------------
-# 6️⃣ 실행 단계
-# ------------------------------------
-try:
-    update_status("처리 엔진 로딩 중...", "running")
-    from core.pipeline import run_pipeline
-    update_status("처리 엔진 로딩 완료", "complete")
-    progress.progress(10)
-
-    update_status("문서 분석 및 정리 중...", "running")
-    zip_path = run_pipeline(
-        files=uploaded_files,
-        use_expand=options.get("use_expand", True),
-        make_zip=options.get("make_zip", True),
-        log_cb=log,
-        progress_cb=lambda p: progress.progress(10 + int(p * 0.8)),
+def update_status(text):
+    status_container.markdown(
+        f"""
+        <div style="
+            background:#2e2e2e;
+            padding:8px;
+            border-radius:6px;
+            font-size:0.9em;
+        ">
+        {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    update_status("문서 분석 및 정리 완료", "complete")
-    progress.progress(95)
 
-    if options.get("make_zip", True):
-        update_status("ZIP 파일 생성 완료", "complete")
+def log(msg):
+    st.session_state.logs.append(msg)
+    log_container.markdown(
+        "<br>".join(st.session_state.logs[-10:]),
+        unsafe_allow_html=True,
+    )
 
-    progress.progress(100)
-    update_status("전체 작업 완료 🎉", "complete")
+# 초기 상태 표시
+update_status("대기 중")
 
-except Exception as e:
-    update_status(f"오류 발생: {e}", "error")
-    st.error("문서 처리 중 오류가 발생했습니다.")
-    st.stop()
+# -------------------------------------------------
+# 실행 로직
+# -------------------------------------------------
+if run_clicked:
+    try:
+        update_status("🔄 처리 엔진 로딩 중... [0%]")
+        log("엔진 로딩 시작")
 
-# ------------------------------------
-# 7️⃣ 결과 출력
-# ------------------------------------
-st.success("🎉 문서 정리가 완료되었습니다.")
+        from core.pipeline import run_pipeline
 
-if options.get("make_zip", True) and zip_path:
-    with open(zip_path, "rb") as f:
-        st.download_button(
-            "📥 정리된 ZIP 파일 다운로드",
-            f,
-            file_name="result_documents.zip",
-            mime="application/zip",
+        def progress_cb(pct):
+            update_status(f"🔄 processing [{pct}%]")
+
+        zip_path = run_pipeline(
+            files=uploaded_files,
+            log_cb=log,
+            progress_cb=progress_cb,
         )
+
+        update_status("✅ 완료 [100%]")
+        log("모든 문서 정리 완료")
+
+        # ZIP 다운로드 버튼을 오른쪽 컬럼에 표시
+        with right_col:
+            with open(zip_path, "rb") as f:
+                zip_placeholder.download_button(
+                    "📥 정리된 ZIP 다운로드",
+                    f,
+                    file_name="result_documents.zip",
+                    mime="application/zip",
+                )
+
+    except Exception as e:
+        update_status("❌ 오류 발생")
+        log(f"ERROR: {e}")
+        st.error("처리 중 오류가 발생했습니다.")
